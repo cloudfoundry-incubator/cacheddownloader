@@ -8,14 +8,15 @@ import (
 type CachedFile struct {
 	*os.File
 
-	onClose func(string)
+	ExpandedDirectoryPath string
+	onClose               func(string)
 }
 
-func NewFileCloser(file *os.File, onClose func(string)) *CachedFile {
+func NewFileCloser(file *os.File, directory string, onClose func(string)) *CachedFile {
 	fc := &CachedFile{
 		File: file,
-
-		onClose: onClose,
+		ExpandedDirectoryPath: directory,
+		onClose:               onClose,
 	}
 
 	runtime.SetFinalizer(fc, func(f *CachedFile) {
