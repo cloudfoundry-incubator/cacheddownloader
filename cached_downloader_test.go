@@ -38,6 +38,12 @@ var _ = Describe("File cache", func() {
 		url             *Url.URL
 		server          *ghttp.Server
 		cancelChan      chan struct{}
+		transformer     cacheddownloader.CacheTransformer
+
+		file     io.ReadCloser
+		fileSize int64
+		err      error
+		dir      string
 	)
 
 	BeforeEach(func() {
@@ -55,7 +61,9 @@ var _ = Describe("File cache", func() {
 
 		cacheKey = "the-cache-key"
 
-		cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, 1*time.Second, MAX_CONCURRENT_DOWNLOADS, false)
+		transformer = cacheddownloader.NoopTransform
+
+		cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, 1*time.Second, MAX_CONCURRENT_DOWNLOADS, false, transformer)
 		server = ghttp.NewServer()
 
 		url, err = Url.Parse(server.URL() + "/my_file")
@@ -69,17 +77,10 @@ var _ = Describe("File cache", func() {
 		os.RemoveAll(uncachedPath)
 	})
 
-	var (
-		file     io.ReadCloser
-		fileSize int64
-		err      error
-		dir      string
-	)
-
 	Describe("when the cache folder does not exist", func() {
 		It("should create it", func() {
 			os.RemoveAll(cachedPath)
-			cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, time.Second, MAX_CONCURRENT_DOWNLOADS, false)
+			cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, time.Second, MAX_CONCURRENT_DOWNLOADS, false, transformer)
 			_, err := os.Stat(cachedPath)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -89,7 +90,7 @@ var _ = Describe("File cache", func() {
 		It("should nuke that stuff", func() {
 			filename := filepath.Join(cachedPath, "last_nights_dinner")
 			ioutil.WriteFile(filename, []byte("leftovers"), 0666)
-			cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, time.Second, MAX_CONCURRENT_DOWNLOADS, false)
+			cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, time.Second, MAX_CONCURRENT_DOWNLOADS, false, transformer)
 			_, err := os.Stat(filename)
 			Expect(err).To(HaveOccurred())
 		})
@@ -107,7 +108,7 @@ var _ = Describe("File cache", func() {
 					ghttp.RespondWith(http.StatusOK, string(downloadContent), header),
 				))
 
-				file, fileSize, err = cache.Fetch(url, "", cacheddownloader.NoopTransform, cancelChan)
+				file, fileSize, err = cache.Fetch(url, "", cancelChan)
 			})
 
 			It("should not error", func() {
@@ -131,7 +132,7 @@ var _ = Describe("File cache", func() {
 		Context("when the download fails", func() {
 			BeforeEach(func() {
 				server.AllowUnhandledRequests = true //will 500 for any attempted requests
-				file, fileSize, err = cache.Fetch(url, "", cacheddownloader.NoopTransform, cancelChan)
+				file, fileSize, err = cache.Fetch(url, "", cancelChan)
 			})
 
 			It("should return an error and no file", func() {
@@ -159,19 +160,13 @@ var _ = Describe("File cache", func() {
 
 		Context("when the file is not in the cache", func() {
 			var (
-				transformer cacheddownloader.CacheTransformer
-
 				fetchedFile     io.ReadCloser
 				fetchedFileSize int64
 				fetchErr        error
 			)
 
-			BeforeEach(func() {
-				transformer = cacheddownloader.NoopTransform
-			})
-
 			JustBeforeEach(func() {
-				fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, transformer, cancelChan)
+				fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, cancelChan)
 			})
 
 			Context("when the download succeeds", func() {
@@ -212,6 +207,7 @@ var _ = Describe("File cache", func() {
 
 							return 100, err
 						}
+						cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, 1*time.Second, MAX_CONCURRENT_DOWNLOADS, false, transformer)
 					})
 
 					It("passes the download through the transformer", func() {
@@ -283,7 +279,7 @@ var _ = Describe("File cache", func() {
 					ghttp.RespondWith(http.StatusOK, string(fileContent), returnedHeader),
 				))
 
-				f, s, _ := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+				f, s, _ := cache.Fetch(url, cacheKey, cancelChan)
 				defer f.Close()
 				Expect(s).To(BeNumerically("==", len(fileContent)))
 
@@ -302,7 +298,7 @@ var _ = Describe("File cache", func() {
 			})
 
 			It("should perform the request with the correct modified headers", func() {
-				cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+				cache.Fetch(url, cacheKey, cancelChan)
 				Expect(server.ReceivedRequests()).To(HaveLen(2))
 			})
 
@@ -312,7 +308,7 @@ var _ = Describe("File cache", func() {
 				})
 
 				It("should redownload the file", func() {
-					f, _, _ := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					f, _, _ := cache.Fetch(url, cacheKey, cancelChan)
 					defer f.Close()
 
 					paths, _ := filepath.Glob(cacheFilePath + "*")
@@ -320,14 +316,14 @@ var _ = Describe("File cache", func() {
 				})
 
 				It("should return a readcloser pointing to the file", func() {
-					file, fileSize, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					file, fileSize, err := cache.Fetch(url, cacheKey, cancelChan)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ioutil.ReadAll(file)).To(Equal([]byte(downloadContent)))
 					Expect(fileSize).To(BeNumerically("==", len(downloadContent)))
 				})
 
 				It("should have put the file in the cache", func() {
-					f, s, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					f, s, err := cache.Fetch(url, cacheKey, cancelChan)
 					f.Close()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ioutil.ReadDir(cachedPath)).To(HaveLen(1))
@@ -343,14 +339,14 @@ var _ = Describe("File cache", func() {
 				})
 
 				It("should return a readcloser pointing to the file", func() {
-					file, fileSize, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					file, fileSize, err := cache.Fetch(url, cacheKey, cancelChan)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ioutil.ReadAll(file)).To(Equal([]byte(downloadContent)))
 					Expect(fileSize).To(BeNumerically("==", len(downloadContent)))
 				})
 
 				It("should have removed the file from the cache", func() {
-					f, s, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					f, s, err := cache.Fetch(url, cacheKey, cancelChan)
 					f.Close()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ioutil.ReadDir(cachedPath)).To(HaveLen(0))
@@ -365,7 +361,7 @@ var _ = Describe("File cache", func() {
 				})
 
 				It("should not redownload the file", func() {
-					f, s, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					f, s, err := cache.Fetch(url, cacheKey, cancelChan)
 					Expect(err).NotTo(HaveOccurred())
 					defer f.Close()
 
@@ -375,7 +371,7 @@ var _ = Describe("File cache", func() {
 				})
 
 				It("should return a readcloser pointing to the file", func() {
-					file, _, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					file, _, err := cache.Fetch(url, cacheKey, cancelChan)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(ioutil.ReadAll(file)).To(Equal(fileContent))
 				})
@@ -391,7 +387,7 @@ var _ = Describe("File cache", func() {
 					ghttp.RespondWith(http.StatusOK, string(downloadContent), returnedHeader),
 				))
 
-				file, fileSize, err = cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+				file, fileSize, err = cache.Fetch(url, cacheKey, cancelChan)
 			})
 
 			It("should not error", func() {
@@ -424,7 +420,7 @@ var _ = Describe("File cache", func() {
 						ghttp.RespondWith(http.StatusOK, string(downloadContent), returnedHeader),
 					))
 
-					file, _, err = cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					file, _, err = cache.Fetch(url, cacheKey, cancelChan)
 				})
 
 				It("should not error", func() {
@@ -447,7 +443,7 @@ var _ = Describe("File cache", func() {
 					ghttp.RespondWith(http.StatusOK, string(downloadContent), returnedHeader),
 				))
 
-				cachedFile, _, err := cache.Fetch(url, name, cacheddownloader.NoopTransform, cancelChan)
+				cachedFile, _, err := cache.Fetch(url, name, cancelChan)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ioutil.ReadAll(cachedFile)).To(Equal(downloadContent))
 				cachedFile.Close()
@@ -482,7 +478,7 @@ var _ = Describe("File cache", func() {
 					// windows timer increments every 15.6ms, without the sleep
 					// A, B & C will sometimes have the same timestamp
 					time.Sleep(16 * time.Millisecond)
-					cache.Fetch(url, "A", cacheddownloader.NoopTransform, cancelChan)
+					cache.Fetch(url, "A", cancelChan)
 				})
 
 				It("considers that file to be the newest", func() {
@@ -532,11 +528,11 @@ var _ = Describe("File cache", func() {
 
 			It("processes one at a time", func() {
 				go func() {
-					cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+					cache.Fetch(url, cacheKey, cancelChan)
 					barrier <- nil
 				}()
 				<-barrier
-				cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+				cache.Fetch(url, cacheKey, cancelChan)
 				<-barrier
 			})
 		})
@@ -566,14 +562,14 @@ var _ = Describe("File cache", func() {
 				errs := make(chan error)
 
 				go func() {
-					_, _, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, make(chan struct{}))
+					_, _, err := cache.Fetch(url, cacheKey, make(chan struct{}))
 					errs <- err
 				}()
 				Eventually(requestInitiated).Should(Receive())
 
 				close(cancelChan)
 
-				_, _, err := cache.Fetch(url, cacheKey, cacheddownloader.NoopTransform, cancelChan)
+				_, _, err := cache.Fetch(url, cacheKey, cancelChan)
 				Expect(err).To(BeAssignableToTypeOf(cacheddownloader.NewDownloadCancelledError("", 0, cacheddownloader.NoBytesReceived)))
 
 				close(completeRequest)
@@ -582,7 +578,7 @@ var _ = Describe("File cache", func() {
 		})
 	})
 
-	Describe("When providing a tar that should be cached", func() {
+	Describe("FetchAsDirectory", func() {
 		var cacheFilePath string
 		var returnedHeader http.Header
 
@@ -896,7 +892,9 @@ var _ = Describe("File cache", func() {
 					ghttp.RespondWith(http.StatusOK, string(downloadContent), returnedHeader),
 				))
 
-				fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, cacheddownloader.TarTransform, cancelChan)
+				cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, 1*time.Second, MAX_CONCURRENT_DOWNLOADS, false, cacheddownloader.TarTransform)
+
+				fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, cancelChan)
 				Expect(fetchErr).NotTo(HaveOccurred())
 				Expect(fetchedFile).NotTo(BeNil())
 				Expect(ioutil.ReadAll(fetchedFile)).To(Equal(downloadContent))
@@ -956,7 +954,7 @@ var _ = Describe("File cache", func() {
 							ghttp.RespondWith(http.StatusOK, string(fillerContent), returnedHeader),
 						))
 
-						cachedFile, _, err := cache.Fetch(urlFiller, "filler", cacheddownloader.NoopTransform, cancelChan)
+						cachedFile, _, err := cache.Fetch(urlFiller, "filler", cancelChan)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(ioutil.ReadAll(cachedFile)).To(Equal(fillerContent))
 						cachedFile.Close()
@@ -1013,6 +1011,10 @@ var _ = Describe("File cache", func() {
 			})
 
 			Context("then is fetched with Fetch", func() {
+				BeforeEach(func() {
+					cache = cacheddownloader.New(cachedPath, uncachedPath, maxSizeInBytes, 1*time.Second, MAX_CONCURRENT_DOWNLOADS, false, cacheddownloader.TarTransform)
+				})
+
 				JustBeforeEach(func() {
 					server.AppendHandlers(ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/my_file"),
@@ -1021,7 +1023,8 @@ var _ = Describe("File cache", func() {
 						}),
 						ghttp.RespondWithPtr(&status, &downloadContent, returnedHeader),
 					))
-					fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, cacheddownloader.TarTransform, cancelChan)
+
+					fetchedFile, fetchedFileSize, fetchErr = cache.Fetch(url, cacheKey, cancelChan)
 				})
 				BeforeEach(func() {
 					downloadContent = CreateTarBuffer("test content", 0).Bytes()

@@ -19,8 +19,20 @@ type CacheTransformer func(source, destination string) (newSize int64, err error
 //go:generate counterfeiter . CachedDownloader
 
 type CachedDownloader interface {
-	Fetch(urlToFetch *url.URL, cacheKey string, transformer CacheTransformer, cancelChan <-chan struct{}) (io.ReadCloser, int64, error)
-	FetchAsDirectory(urlToFetch *url.URL, cacheKey string, cancelChan <-chan struct{}) (string, error)
+	// Fetch downloads the file at the given URL and stores it in the cache with the given cacheKey.
+	// If cacheKey is empty, the file will not be saved in the cache.
+	//
+	// Fetch returns a stream that can be used to read the contents of the downloaded file. While this stream is active (i.e., not yet closed),
+	// the associated cache entry will be considered in use and will not be ejected from the cache.
+	Fetch(urlToFetch *url.URL, cacheKey string, cancelChan <-chan struct{}) (stream io.ReadCloser, size int64, err error)
+
+	// FetchAsDirectory downloads the tarfile pointed to by the given URL, expands the tarfile into a directory, and returns the path of that directory.
+	FetchAsDirectory(urlToFetch *url.URL, cacheKey string, cancelChan <-chan struct{}) (dirPath string, err error)
+
+	// CloseDirectory decrements the usage counter for the given cacheKey/directoryPath pair.
+	// It should be called when the directory returned by FetchAsDirectory is no longer in use.
+	// In this way, FetchAsDirectory and CloseDirectory should be treated as a pair of operations,
+	// and a process that calls FetchAsDirectory should make sure a corresponding CloseDirectory is eventually called.
 	CloseDirectory(cacheKey, directoryPath string) error
 }
 
@@ -47,6 +59,7 @@ type cachedDownloader struct {
 	downloader   *Downloader
 	uncachedPath string
 	cache        *FileCache
+	transformer  CacheTransformer
 
 	lock       *sync.Mutex
 	inProgress map[string]chan struct{}
@@ -60,13 +73,16 @@ func (c CachingInfoType) Equal(other CachingInfoType) bool {
 	return c.ETag == other.ETag && c.LastModified == other.LastModified
 }
 
-func New(cachedPath string, uncachedPath string, maxSizeInBytes int64, downloadTimeout time.Duration, maxConcurrentDownloads int, skipSSLVerification bool) *cachedDownloader {
+// A transformer function can be used to do post-download
+// processing on the file before it is stored in the cache.
+func New(cachedPath string, uncachedPath string, maxSizeInBytes int64, downloadTimeout time.Duration, maxConcurrentDownloads int, skipSSLVerification bool, transformer CacheTransformer) *cachedDownloader {
 	os.RemoveAll(cachedPath)
 	os.MkdirAll(cachedPath, 0770)
 	return &cachedDownloader{
 		downloader:   NewDownloader(downloadTimeout, maxConcurrentDownloads, skipSSLVerification),
 		uncachedPath: uncachedPath,
 		cache:        NewCache(cachedPath, maxSizeInBytes),
+		transformer:  transformer,
 		lock:         &sync.Mutex{},
 		inProgress:   map[string]chan struct{}{},
 	}
@@ -77,13 +93,13 @@ func (c *cachedDownloader) CloseDirectory(cacheKey, directoryPath string) error 
 	return c.cache.CloseDirectory(cacheKey, directoryPath)
 }
 
-func (c *cachedDownloader) Fetch(url *url.URL, cacheKey string, transformer CacheTransformer, cancelChan <-chan struct{}) (io.ReadCloser, int64, error) {
+func (c *cachedDownloader) Fetch(url *url.URL, cacheKey string, cancelChan <-chan struct{}) (io.ReadCloser, int64, error) {
 	if cacheKey == "" {
-		return c.fetchUncachedFile(url, transformer, cancelChan)
+		return c.fetchUncachedFile(url, c.transformer, cancelChan)
 	}
 
 	cacheKey = fmt.Sprintf("%x", md5.Sum([]byte(cacheKey)))
-	return c.fetchCachedFile(url, cacheKey, transformer, cancelChan)
+	return c.fetchCachedFile(url, cacheKey, cancelChan)
 }
 
 func (c *cachedDownloader) fetchUncachedFile(url *url.URL, transformer CacheTransformer, cancelChan <-chan struct{}) (*CachedFile, int64, error) {
@@ -96,7 +112,7 @@ func (c *cachedDownloader) fetchUncachedFile(url *url.URL, transformer CacheTran
 	return file, size, err
 }
 
-func (c *cachedDownloader) fetchCachedFile(url *url.URL, cacheKey string, transformer CacheTransformer, cancelChan <-chan struct{}) (*CachedFile, int64, error) {
+func (c *cachedDownloader) fetchCachedFile(url *url.URL, cacheKey string, cancelChan <-chan struct{}) (*CachedFile, int64, error) {
 	rateLimiter, err := c.acquireLimiter(cacheKey, cancelChan)
 	if err != nil {
 		return nil, 0, err
@@ -107,7 +123,7 @@ func (c *cachedDownloader) fetchCachedFile(url *url.URL, cacheKey string, transf
 	currentReader, currentCachingInfo, getErr := c.cache.Get(cacheKey)
 
 	// download (short circuits if endpoint respects etag/etc.)
-	download, cacheIsWarm, size, err := c.populateCache(url, cacheKey, currentCachingInfo, transformer, cancelChan)
+	download, cacheIsWarm, size, err := c.populateCache(url, cacheKey, currentCachingInfo, c.transformer, cancelChan)
 	if err != nil {
 		if currentReader != nil {
 			currentReader.Close()
