@@ -116,6 +116,7 @@ func (downloader *Downloader) Download(
 	url *url.URL,
 	createDestination func() (*os.File, error),
 	cachingInfoIn CachingInfoType,
+	checksum ChecksumInfoType,
 	cancelChan <-chan struct{},
 ) (path string, cachingInfoOut CachingInfoType, err error) {
 
@@ -132,7 +133,7 @@ func (downloader *Downloader) Download(
 	}()
 
 	for attempt := 0; attempt < MAX_DOWNLOAD_ATTEMPTS; attempt++ {
-		path, cachingInfoOut, err = downloader.fetchToFile(url, createDestination, cachingInfoIn, cancelChan)
+		path, cachingInfoOut, err = downloader.fetchToFile(url, createDestination, cachingInfoIn, checksum, cancelChan)
 
 		if err == nil {
 			break
@@ -154,6 +155,7 @@ func (downloader *Downloader) fetchToFile(
 	url *url.URL,
 	createDestination func() (*os.File, error),
 	cachingInfoIn CachingInfoType,
+	checksum ChecksumInfoType,
 	cancelChan <-chan struct{},
 ) (string, CachingInfoType, error) {
 	var req *http.Request
