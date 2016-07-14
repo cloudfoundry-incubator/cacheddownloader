@@ -2,6 +2,7 @@ package cacheddownloader
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -38,6 +39,8 @@ type CachedDownloader interface {
 	// In this way, FetchAsDirectory and CloseDirectory should be treated as a pair of operations,
 	// and a process that calls FetchAsDirectory should make sure a corresponding CloseDirectory is eventually called.
 	CloseDirectory(cacheKey, directoryPath string) error
+
+	SaveState() error
 }
 
 func NoopTransform(source, destination string) (int64, error) {
@@ -65,10 +68,11 @@ type ChecksumInfoType struct {
 }
 
 type cachedDownloader struct {
-	downloader   *Downloader
-	uncachedPath string
-	cache        *FileCache
-	transformer  CacheTransformer
+	downloader    *Downloader
+	uncachedPath  string
+	cache         *FileCache
+	transformer   CacheTransformer
+	cacheLocation string
 
 	lock       *sync.Mutex
 	inProgress map[string]chan struct{}
@@ -88,13 +92,23 @@ func New(cachedPath string, uncachedPath string, maxSizeInBytes int64, downloadT
 	os.RemoveAll(cachedPath)
 	os.MkdirAll(cachedPath, 0770)
 	return &cachedDownloader{
-		downloader:   NewDownloader(downloadTimeout, maxConcurrentDownloads, skipSSLVerification, caCertPool),
-		uncachedPath: uncachedPath,
-		cache:        NewCache(cachedPath, maxSizeInBytes),
-		transformer:  transformer,
-		lock:         &sync.Mutex{},
-		inProgress:   map[string]chan struct{}{},
+		downloader:    NewDownloader(downloadTimeout, maxConcurrentDownloads, skipSSLVerification, caCertPool),
+		uncachedPath:  uncachedPath,
+		cache:         NewCache(cachedPath, maxSizeInBytes),
+		transformer:   transformer,
+		lock:          &sync.Mutex{},
+		inProgress:    map[string]chan struct{}{},
+		cacheLocation: cachedPath,
 	}
+}
+
+func (c *cachedDownloader) SaveState() error {
+	json, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(c.cacheLocation, json, 0600)
 }
 
 func (c *cachedDownloader) CloseDirectory(cacheKey, directoryPath string) error {
