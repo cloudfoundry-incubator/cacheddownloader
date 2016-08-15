@@ -151,10 +151,7 @@ func (c *FileCache) Add(cacheKey, sourcePath string, size int64, cachingInfo Cac
 
 	oldEntry := c.Entries[cacheKey]
 
-	if !c.makeRoom(size, "") {
-		//file does not fit in cache...
-		return nil, NotEnoughSpace
-	}
+	c.makeRoom(size, "")
 
 	c.Seq++
 	uniqueName := fmt.Sprintf("%s-%d-%d", cacheKey, time.Now().UnixNano(), c.Seq)
@@ -183,10 +180,7 @@ func (c *FileCache) AddDirectory(cacheKey, sourcePath string, size int64, cachin
 
 	oldEntry := c.Entries[cacheKey]
 
-	if !c.makeRoom(newSize, "") {
-		//file does not fit in cache...
-		return "", NotEnoughSpace
-	}
+	c.makeRoom(newSize, "")
 
 	c.Seq++
 	uniqueName := fmt.Sprintf("%s-%d-%d", cacheKey, time.Now().UnixNano(), c.Seq)
@@ -280,10 +274,6 @@ func (c *FileCache) updateOldEntries(cacheKey string, entry *FileCacheEntry) {
 }
 
 func (c *FileCache) makeRoom(size int64, excludedCacheKey string) bool {
-	if size > c.maxSizeInBytes {
-		return false
-	}
-
 	usedSpace := c.usedSpace()
 	for c.maxSizeInBytes < usedSpace+size {
 		var oldestEntry *FileCacheEntry

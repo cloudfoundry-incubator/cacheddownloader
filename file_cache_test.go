@@ -46,11 +46,11 @@ var _ = Describe("FileCache", func() {
 			cacheInfo = cacheddownloader.CachingInfoType{}
 		})
 
-		It("fails if room cannot be allocated", func() {
+		It("succeeds even if room cannot be allocated", func() {
 			var err error
 			readCloser, err = cache.Add(cacheKey, sourceFile.Name(), 250000, cacheInfo)
-			Expect(err).To(Equal(cacheddownloader.NotEnoughSpace))
-			Expect(readCloser).To(BeNil())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readCloser).NotTo(BeNil())
 		})
 
 		Context("when closed is called", func() {
@@ -202,11 +202,11 @@ var _ = Describe("FileCache", func() {
 			cacheInfo = cacheddownloader.CachingInfoType{}
 		})
 
-		It("fails if room cannot be allocated", func() {
+		It("succeeds even if room cannot be allocated", func() {
 			var err error
 			directoryPath, err = cache.AddDirectory(cacheKey, sourceArchive.Name(), 250000, cacheInfo)
-			Expect(err).To(Equal(cacheddownloader.NotEnoughSpace))
-			Expect(directoryPath).To(BeEmpty())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(directoryPath).NotTo(BeEmpty())
 		})
 
 		Context("when closed is called", func() {
