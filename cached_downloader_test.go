@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -1403,17 +1404,28 @@ MCUXgckTpKCuGwbJk7424Nb8bLzf3kllAiA5mUBgjfr/WtFSJdWcPQ4Zt9KTMNKD
 EUO0ukpTwEIl6wIhAMbGqZK3zAAFdq8DD2jPx+UJXnh0rnOkZBzDtJ6/iN69AiEA
 1Aq8MJgTaYsDQWyU/hDq5YkDJc9e9DSCvUIzqxQWMQE=
 -----END RSA PRIVATE KEY-----`)
+			cert       tls.Certificate
+			caCertPool *systemcerts.CertPool
+			err        error
 		)
 
-		It("uses it", func() {
+		BeforeEach(func() {
 			server.Close()
 			server = ghttp.NewUnstartedServer()
-			cert, err := tls.X509KeyPair(localhostCert, localhostKey)
+
+			cert, err = tls.X509KeyPair(localhostCert, localhostKey)
 			Expect(err).NotTo(HaveOccurred())
 
 			server.HTTPTestServer.TLS = &tls.Config{
 				Certificates: []tls.Certificate{cert},
 			}
+
+			caCertPool = systemcerts.NewCertPool()
+			ok := caCertPool.AppendCertsFromPEM(localhostCert)
+			Expect(ok).To(BeTrue())
+		})
+
+		It("uses it", func() {
 			server.HTTPTestServer.StartTLS()
 
 			header := http.Header{}
@@ -1423,10 +1435,6 @@ EUO0ukpTwEIl6wIhAMbGqZK3zAAFdq8DD2jPx+UJXnh0rnOkZBzDtJ6/iN69AiEA
 				ghttp.RespondWith(http.StatusOK, "content", header),
 			))
 
-			caCertPool := systemcerts.NewCertPool()
-			ok := caCertPool.AppendCertsFromPEM(localhostCert)
-			Expect(ok).To(BeTrue())
-
 			url, err = Url.Parse(server.URL() + "/my_file")
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1434,6 +1442,35 @@ EUO0ukpTwEIl6wIhAMbGqZK3zAAFdq8DD2jPx+UJXnh0rnOkZBzDtJ6/iN69AiEA
 			cachedDownloader = cacheddownloader.New(uncachedPath, downloader, cache, transformer)
 			_, _, err = cachedDownloader.Fetch(logger, url, "", checksum, cancelChan)
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("when running on a Windows machine", func() {
+			BeforeEach(func() {
+				if runtime.GOOS != "windows" {
+					Skip("not applicable on non-Windows machines")
+				}
+
+				server.HTTPTestServer.TLS.InsecureSkipVerify = false
+			})
+
+			It("defers to the rep_windows job script", func() {
+				server.HTTPTestServer.StartTLS()
+
+				header := http.Header{}
+				header.Set("ETag", "foo")
+				server.AppendHandlers(ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/my_file"),
+					ghttp.RespondWith(http.StatusOK, "content", header),
+				))
+
+				url, err = Url.Parse(server.URL() + "/my_file")
+				Expect(err).NotTo(HaveOccurred())
+
+				downloader = cacheddownloader.NewDownloader(time.Second, MAX_CONCURRENT_DOWNLOADS, false, caCertPool)
+				cachedDownloader = cacheddownloader.New(uncachedPath, downloader, cache, transformer)
+				_, _, err = cachedDownloader.Fetch(logger, url, "", checksum, cancelChan)
+				Expect(err).NotTo(HaveOccurred())
+			})
 		})
 	})
 })
